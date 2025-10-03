@@ -1,0 +1,66 @@
+name: Terraform Security and Deploy
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: wiz
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    
+    - name: Terraform Security Scan
+      run: |
+        # Install tfsec
+        wget -q https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -O tfsec
+        chmod +x tfsec
+        
+        # Run security scan and capture exit code
+        ./tfsec . --format json --out tfsec-results.json --soft-fail
+        CRITICAL_COUNT=$(jq '[.results[] | select(.severity == "CRITICAL")] | length' tfsec-results.json)
+        
+        if [ "$CRITICAL_COUNT" -gt 0 ]; then
+          echo "TERRAFORM SECURITY: FAIL - $CRITICAL_COUNT critical security issues found"
+          ./tfsec . --format default
+          echo "Stopping workflow due to critical Terraform security issues"
+          exit 1
+        else
+          echo "TERRAFORM SECURITY: PASS - No critical security issues found"
+        fi
+    
+    - name: Terraform Init
+      run: terraform init
+    
+    - name: Terraform Validate
+      run: |
+        if terraform validate; then
+          echo "TERRAFORM VALIDATE: PASS - Configuration is valid"
+        else
+          echo "TERRAFORM VALIDATE: FAIL - Configuration errors found"
+          echo "Stopping workflow due to validation errors"
+          exit 1
+        fi
+    
+    - name: Terraform Plan
+      run: terraform plan -out=tfplan
+    
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/main'
+      run: terraform apply -auto-approve tfplan
